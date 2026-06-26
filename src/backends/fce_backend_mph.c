@@ -7,6 +7,20 @@ static int cmp_mph_bucket_desc(const void *a, const void *b) {
     return x->index < y->index ? -1 : (x->index > y->index);
 }
 
+static uint64_t mph_mix64(uint64_t x) {
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x;
+}
+
+static uint32_t mph_slot_for(const void *key, size_t key_len, uint64_t seed, size_t slot_count) {
+    uint64_t h = fnv1a64(key, key_len, seed);
+    return (uint32_t)(mph_mix64(h) % slot_count);
+}
+
 FceStatus freeze_mph(FceBuilder *b) {
     BuildRecord *records = NULL;
     size_t count = 0;
@@ -65,7 +79,7 @@ FceStatus freeze_mph(FceBuilder *b) {
                     placed = 1;
                     for (uint32_t j = 0; j < bcount; j++) {
                         uint32_t rec_index = bucket_items[bucket_offsets[bucket] + j];
-                        uint32_t slot = (uint32_t)(fnv1a64(records[rec_index].key, records[rec_index].key_len, seed) % count);
+                        uint32_t slot = mph_slot_for(records[rec_index].key, records[rec_index].key_len, seed, count);
                         trial_slots[j] = slot;
                         if (used[slot]) {
                             placed = 0;
@@ -157,7 +171,7 @@ FceStatus get_mph(FceReader *r, const void *key, size_t key_len, const void **ou
     uint64_t bucket = h.hi % mh->bucket_count;
     uint64_t seed = buckets[bucket].seed;
     if (!seed) return FCE_ERR_NOT_FOUND;
-    uint64_t slot = fnv1a64(key, key_len, seed) % mh->slot_count;
+    uint64_t slot = mph_slot_for(key, key_len, seed, (size_t)mh->slot_count);
     MphSlot *m = &s[slot];
     if (m->present && m->hash_lo == h.lo && m->hash_hi == h.hi &&
         key_equal(r->keys_blob.data, r->keys_blob.size, m->key_offset, m->key_len, key, key_len)) {
@@ -168,4 +182,3 @@ FceStatus get_mph(FceReader *r, const void *key, size_t key_len, const void **ou
     }
     return FCE_ERR_NOT_FOUND;
 }
-
