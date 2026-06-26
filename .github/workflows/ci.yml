@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-test:
     strategy:
@@ -256,3 +259,119 @@ jobs:
           finally:
               shutil.rmtree(root, ignore_errors=True)
           PY
+
+      - name: Package library artifact
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import shutil
+          import zipfile
+
+          os_name = os.environ["RUNNER_OS"].lower()
+          package_name = f"fast-cache-engine-{os_name}"
+          package_dir = Path("dist") / package_name
+          lib_dir = package_dir / "lib"
+          include_dir = package_dir / "include"
+          lib_dir.mkdir(parents=True, exist_ok=True)
+          shutil.copytree("include", include_dir, dirs_exist_ok=True)
+
+          candidates = [
+              Path("build/libfast_cache_engine.a"),
+              Path("build/libfast_cache_engine.so"),
+              Path("build/libfast_cache_engine.dylib"),
+              Path("build/Release/fast_cache_engine.lib"),
+              Path("build/Release/fast_cache_engine_shared.lib"),
+              Path("build/Release/fast_cache_engine.dll"),
+              Path("build/Debug/fast_cache_engine.lib"),
+              Path("build/Debug/fast_cache_engine_shared.lib"),
+              Path("build/Debug/fast_cache_engine.dll"),
+          ]
+          copied = []
+          for src in candidates:
+              if src.exists():
+                  dst = lib_dir / src.name
+                  shutil.copy2(src, dst)
+                  copied.append(dst)
+          if not copied:
+              raise SystemExit("no library files found to package")
+
+          archive = Path("dist") / f"{package_name}.zip"
+          with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for path in package_dir.rglob("*"):
+                  if path.is_file():
+                      zf.write(path, path.relative_to("dist"))
+          print(f"created {archive}")
+          PY
+
+      - name: Upload library artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-cache-engine-${{ runner.os }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check release marker
+        id: marker
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          subject="$(printf '%s' "$COMMIT_MESSAGE" | head -n 1)"
+          echo "subject=$subject" >> "$GITHUB_OUTPUT"
+          if [[ "$subject" == *"[Release]"* ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            title="$(printf '%s' "$subject" | sed 's/\[Release\]//g')"
+            title="$(printf '%s' "$title" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            if [[ -z "$title" ]]; then
+              title="Fast Cache Engine ${GITHUB_SHA::7}"
+            fi
+            echo "title=$title" >> "$GITHUB_OUTPUT"
+            echo "tag=release-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download library artifacts
+        if: steps.marker.outputs.release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: fast-cache-engine-*
+          merge-multiple: true
+
+      - name: Create release and upload libraries
+        if: steps.marker.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ steps.marker.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.marker.outputs.title }}
+          SUBJECT: ${{ steps.marker.outputs.subject }}
+        shell: bash
+        run: |
+          notes_file="release-notes.md"
+          {
+            echo "Automated release for commit ${GITHUB_SHA}."
+            echo
+            echo "Commit: ${SUBJECT}"
+          } > "$notes_file"
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --title "$RELEASE_TITLE" \
+              --notes-file "$notes_file"
+          else
+            gh release create "$TAG_NAME" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes-file "$notes_file"
+          fi
+          gh release upload "$TAG_NAME" release-artifacts/*.zip --clobber
