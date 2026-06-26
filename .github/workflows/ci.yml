@@ -1,0 +1,258 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Configure
+        run: cmake -S . -B build -DFCE_ENABLE_ZSTD=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+
+      - name: Generate C API smoke test
+        shell: bash
+        run: |
+          mkdir -p ci_smoke
+          cat > ci_smoke/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(fce_ci_smoke LANGUAGES C)
+          add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/.." fce)
+          add_executable(ci_smoke ci_smoke.c)
+          target_link_libraries(ci_smoke PRIVATE fast_cache_engine)
+          EOF
+          cat > ci_smoke/ci_smoke.c <<'EOF'
+          #include "fce_cache.h"
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <string.h>
+
+          #define CHECK_OK(expr) do { FceStatus st__ = (expr); if (st__ != FCE_OK) { \
+              fprintf(stderr, "%s failed: %s\n", #expr, fce_status_string(st__)); return 1; } } while (0)
+          #define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "check failed: %s\n", #expr); return 1; } } while (0)
+
+          static int check_bytes(const void *p, size_t n, const char *s) {
+              return n == strlen(s) && memcmp(p, s, n) == 0;
+          }
+
+          int main(void) {
+              const void *v = NULL;
+              size_t n = 0;
+              FceBuilder *b = NULL;
+              FceReader *r = NULL;
+              FceIterator *it = NULL;
+
+              FceSchema s = fce_schema_default();
+              s.allow_duplicate_put = 1;
+              CHECK_OK(fce_builder_open("ci_sorted_cache", &s, &b));
+              CHECK_OK(fce_builder_put(b, "k-a13f", 6, "v-01", 4));
+              CHECK_OK(fce_builder_put(b, "k-a13f", 6, "v-02", 4));
+              CHECK_OK(fce_builder_put_u128(b, 7, 9, "v-9c", 4));
+              CHECK_OK(fce_builder_freeze(b));
+              CHECK_OK(fce_builder_close(b));
+              CHECK_OK(fce_reader_open_expected("ci_sorted_cache", &s, &r));
+              CHECK_OK(fce_reader_get(r, "k-a13f", 6, &v, &n));
+              CHECK(check_bytes(v, n, "v-02"));
+              CHECK_OK(fce_reader_get_u128(r, 7, 9, &v, &n));
+              CHECK(check_bytes(v, n, "v-9c"));
+              fce_reader_close(r);
+
+              s = fce_schema_default();
+              s.backend = FCE_BACKEND_DIRECT_TABLE;
+              s.key_kind = FCE_KEY_U64;
+              s.fixed_key_size = 8;
+              s.user_flags = FCE_FLAG_ALLOW_SPARSE_DIRECT_TABLE;
+              CHECK_OK(fce_builder_open("ci_direct_cache", &s, &b));
+              CHECK_OK(fce_builder_put_u64(b, 42, "v-d4", 4));
+              CHECK_OK(fce_builder_freeze(b));
+              CHECK_OK(fce_builder_close(b));
+              CHECK_OK(fce_reader_open_expected("ci_direct_cache", &s, &r));
+              CHECK_OK(fce_reader_get_u64(r, 42, &v, &n));
+              CHECK(check_bytes(v, n, "v-d4"));
+              fce_reader_close(r);
+
+              s = fce_schema_default();
+              s.backend = FCE_BACKEND_RADIX;
+              s.lookup = FCE_LOOKUP_PREFIX;
+              CHECK_OK(fce_builder_open("ci_radix_cache", &s, &b));
+              CHECK_OK(fce_builder_put(b, "p-01a", 5, "x", 1));
+              CHECK_OK(fce_builder_put(b, "p-01b", 5, "y", 1));
+              CHECK_OK(fce_builder_put(b, "q-99z", 5, "z", 1));
+              CHECK_OK(fce_builder_freeze(b));
+              CHECK_OK(fce_builder_close(b));
+              CHECK_OK(fce_reader_open_expected("ci_radix_cache", &s, &r));
+              CHECK_OK(fce_reader_prefix_scan(r, "p-", 2, &it));
+              size_t hits = 0;
+              const void *key_ptr = NULL;
+              const void *value_ptr = NULL;
+              size_t key_len = 0;
+              size_t value_len = 0;
+              while (fce_iterator_next(it, &key_ptr, &key_len, &value_ptr, &value_len) == FCE_OK) hits++;
+              CHECK(hits == 2);
+              fce_iterator_close(it);
+              fce_reader_close(r);
+
+              s = fce_schema_default();
+              s.backend = FCE_BACKEND_MPH;
+              CHECK_OK(fce_builder_open("ci_mph_cache", &s, &b));
+              CHECK_OK(fce_builder_put(b, "m-a7", 4, "x7", 2));
+              CHECK_OK(fce_builder_put(b, "m-b8", 4, "y8", 2));
+              CHECK_OK(fce_builder_freeze(b));
+              CHECK_OK(fce_builder_close(b));
+              CHECK_OK(fce_reader_open_expected("ci_mph_cache", &s, &r));
+              CHECK_OK(fce_reader_get(r, "m-b8", 4, &v, &n));
+              CHECK(check_bytes(v, n, "y8"));
+              CHECK(fce_reader_get(r, "missing", 7, &v, &n) == FCE_ERR_NOT_FOUND);
+              fce_reader_close(r);
+
+              s = fce_schema_default();
+              s.backend = FCE_BACKEND_LOG;
+              s.allow_duplicate_put = 1;
+              CHECK_OK(fce_builder_open("ci_log_cache", &s, &b));
+              CHECK_OK(fce_builder_put(b, "l-9x", 4, "v-a", 3));
+              CHECK_OK(fce_builder_freeze(b));
+              CHECK_OK(fce_builder_close(b));
+              CHECK_OK(fce_log_append("ci_log_cache", "l-9x", 4, "v-b", 3));
+              CHECK_OK(fce_reader_open_expected("ci_log_cache", &s, &r));
+              CHECK_OK(fce_reader_get(r, "l-9x", 4, &v, &n));
+              CHECK(check_bytes(v, n, "v-b"));
+              fce_reader_close(r);
+              CHECK_OK(fce_compact("ci_log_cache", FCE_BACKEND_SORTED_INDEX, "ci_compact_cache"));
+
+              int32_t values[] = {5, 5, 5, 9};
+              void *enc = NULL;
+              void *dec = NULL;
+              size_t enc_len = 0;
+              size_t dec_len = 0;
+              CHECK_OK(fce_codec_encode(FCE_CODEC_RLE, values, sizeof(values), &enc, &enc_len));
+              CHECK_OK(fce_codec_decode(FCE_CODEC_RLE, enc, enc_len, &dec, &dec_len));
+              CHECK(dec_len == sizeof(values) && memcmp(dec, values, sizeof(values)) == 0);
+              fce_free(enc);
+              fce_free(dec);
+
+              FceMemoryStats stats;
+              CHECK_OK(fce_memory_stats(&stats));
+              CHECK(stats.active_allocations == 0);
+              CHECK(stats.active_bytes == 0);
+              return 0;
+          }
+          EOF
+
+      - name: Build and run C API smoke test
+        shell: bash
+        run: |
+          cmake -S ci_smoke -B ci_smoke_build -DFCE_ENABLE_ZSTD=ON
+          cmake --build ci_smoke_build --config Release --parallel 2
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          candidates = [
+              Path("ci_smoke_build/ci_smoke"),
+              Path("ci_smoke_build/Release/ci_smoke.exe"),
+              Path("ci_smoke_build/Debug/ci_smoke.exe"),
+          ]
+          exe = next((p for p in candidates if p.exists()), None)
+          if exe is None:
+              raise SystemExit("ci_smoke executable not found")
+          subprocess.run([str(exe)], check=True)
+          PY
+
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import shutil
+          import struct
+          import subprocess
+          import tempfile
+
+          candidates = [
+              Path("build/fce"),
+              Path("build/fce.exe"),
+              Path("build/Release/fce.exe"),
+              Path("build/Debug/fce.exe"),
+          ]
+          exe = next((p for p in candidates if p.exists()), None)
+          if exe is None:
+              raise SystemExit("fce executable not found")
+
+          root = Path(tempfile.mkdtemp(prefix="fce-cli-"))
+          try:
+              schema = root / "schema.json"
+              records = root / "records.fce"
+              cache = root / "cache"
+              schema.write_text(json.dumps({
+                  "backend": "radix",
+                  "lookup": "prefix",
+                  "key_kind": "bytes",
+                  "value_kind": "var_record",
+                  "allow_duplicate_put": True,
+              }), encoding="utf-8")
+              records.write_bytes(struct.pack("<QQ", 5, 3) + b"r-a7x" + b"v9q")
+              subprocess.run([str(exe), "build", "--schema", str(schema), "--input", str(records), "--output", str(cache)], check=True)
+              subprocess.run([str(exe), "validate", str(cache)], check=True)
+              inspect = subprocess.run([str(exe), "inspect", str(cache)], check=True, text=True, stdout=subprocess.PIPE).stdout
+              if "backend=radix" not in inspect:
+                  raise SystemExit(inspect)
+              dump = subprocess.run([str(exe), "dump", str(cache), "--limit", "1"], check=True, text=True, stdout=subprocess.PIPE).stdout
+              if "key_len=5" not in dump:
+                  raise SystemExit(dump)
+          finally:
+              shutil.rmtree(root, ignore_errors=True)
+          PY
+
+      - name: Python binding smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import sys
+          import tempfile
+
+          sys.path.insert(0, str(Path("python").resolve()))
+          from fast_cache_engine import (
+              CacheBuilder,
+              CacheReader,
+              CacheSchema,
+              export_sqlite,
+              import_sqlite,
+              version_string,
+          )
+
+          root = Path(tempfile.mkdtemp(prefix="fce-python-"))
+          try:
+              schema = CacheSchema(backend="sorted_index")
+              cache = root / "cache"
+              with CacheBuilder(cache, schema) as builder:
+                  builder.put(b"k-9f", b"v-2c")
+                  builder.freeze()
+              with CacheReader(cache) as reader:
+                  assert bytes(reader.get(b"k-9f")) == b"v-2c"
+
+              db = root / "cache.sqlite"
+              restored = root / "restored"
+              export_sqlite(cache, db)
+              import_sqlite(db, restored, schema)
+              with CacheReader(restored) as reader:
+                  assert bytes(reader.get(b"k-9f")) == b"v-2c"
+
+              assert version_string()
+          finally:
+              shutil.rmtree(root, ignore_errors=True)
+          PY

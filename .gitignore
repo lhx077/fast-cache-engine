@@ -1,0 +1,12 @@
+build/
+build_*/
+cmake-build-*/
+ci_smoke/
+ci_smoke_build/
+ci_*_cache/
+.idea/
+__pycache__/
+*.pyc
+tmp_*_cache/
+tmp_*.fce
+tmp_*.json
