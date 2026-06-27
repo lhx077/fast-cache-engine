@@ -464,11 +464,11 @@ void fce_iterator_close(FceIterator *it) {
 
 void fce_reader_close(FceReader *reader) {
     if (!reader) return;
+    fce_arena_destroy(reader->arena);
     if (reader->has_cache_lock) {
         fce_cache_lock_release(&reader->cache_lock);
         reader->has_cache_lock = 0;
     }
-    fce_arena_destroy(reader->arena);
     fce_free(reader);
 }
 
@@ -534,8 +534,9 @@ FceStatus fce_compact(const char *source_cache_dir, FceBackendKind backend, cons
         }
         fce_iterator_close(it);
     }
+    fce_reader_close(r);
+    r = NULL;
     if (st == FCE_OK) st = fce_builder_freeze(b);
     fce_builder_close(b);
-    fce_reader_close(r);
     return st;
 }

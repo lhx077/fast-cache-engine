@@ -170,7 +170,7 @@ jobs:
           exe = next((p for p in candidates if p.exists()), None)
           if exe is None:
               raise SystemExit("ci_smoke executable not found")
-          subprocess.run([str(exe)], check=True)
+          subprocess.run([str(exe)], check=True, timeout=60)
           PY
 
       - name: CLI smoke test
@@ -194,6 +194,10 @@ jobs:
           if exe is None:
               raise SystemExit("fce executable not found")
 
+          def run(cmd, **kwargs):
+              print("+", " ".join(str(part) for part in cmd), flush=True)
+              return subprocess.run(cmd, check=True, timeout=60, **kwargs)
+
           root = Path(tempfile.mkdtemp(prefix="fce-cli-"))
           try:
               schema = root / "schema.json"
@@ -207,12 +211,12 @@ jobs:
                   "allow_duplicate_put": True,
               }), encoding="utf-8")
               records.write_bytes(struct.pack("<QQ", 5, 3) + b"r-a7x" + b"v9q")
-              subprocess.run([str(exe), "build", "--schema", str(schema), "--input", str(records), "--output", str(cache)], check=True)
-              subprocess.run([str(exe), "validate", str(cache)], check=True)
-              inspect = subprocess.run([str(exe), "inspect", str(cache)], check=True, text=True, stdout=subprocess.PIPE).stdout
+              run([str(exe), "build", "--schema", str(schema), "--input", str(records), "--output", str(cache)])
+              run([str(exe), "validate", str(cache)])
+              inspect = run([str(exe), "inspect", str(cache)], text=True, stdout=subprocess.PIPE).stdout
               if "backend=radix" not in inspect:
                   raise SystemExit(inspect)
-              dump = subprocess.run([str(exe), "dump", str(cache), "--limit", "1"], check=True, text=True, stdout=subprocess.PIPE).stdout
+              dump = run([str(exe), "dump", str(cache), "--limit", "1"], text=True, stdout=subprocess.PIPE).stdout
               if "key_len=5" not in dump:
                   raise SystemExit(dump)
           finally:

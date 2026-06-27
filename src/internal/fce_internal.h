@@ -1,6 +1,10 @@
 #ifndef FCE_INTERNAL_H
 #define FCE_INTERNAL_H
 
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "fce_cache.h"
 #include "fce_arena.h"
 

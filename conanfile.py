@@ -6,7 +6,7 @@ import os
 
 class FastCacheEngineConan(ConanFile):
     name = "fast-cache-engine"
-    version = "1.0.0"
+    version = "1.1.0"
     license = "Apache-2.0"
     description = "Native C library for verifiable, read-optimized persistent key/value caches"
     topics = ("cache", "key-value", "c", "mmap", "lookup")
