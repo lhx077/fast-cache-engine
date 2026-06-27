@@ -100,6 +100,10 @@ FceStatus fce_reader_open_expected(const char *cache_dir, const FceSchema *expec
     }
     r->cache_dir = (char *)fce_arena_memdup(r->arena, cache_dir, strlen(cache_dir) + 1);
     if (!r->cache_dir) st = FCE_ERR_OUT_OF_MEMORY;
+    if (st == FCE_OK) {
+        st = fce_cache_lock_acquire_shared(cache_dir, &r->cache_lock);
+        if (st == FCE_OK) r->has_cache_lock = 1;
+    }
     if (st == FCE_OK) st = read_manifest(cache_dir, &r->manifest);
     if (st == FCE_OK) {
         r->schema = schema_from_manifest(&r->manifest);
@@ -460,12 +464,22 @@ void fce_iterator_close(FceIterator *it) {
 
 void fce_reader_close(FceReader *reader) {
     if (!reader) return;
+    if (reader->has_cache_lock) {
+        fce_cache_lock_release(&reader->cache_lock);
+        reader->has_cache_lock = 0;
+    }
     fce_arena_destroy(reader->arena);
     fce_free(reader);
 }
 
 FceStatus fce_inspect(const char *cache_dir, FceManifestInfo *out_info) {
-    return read_manifest(cache_dir, out_info);
+    if (!cache_dir || !out_info) return FCE_ERR_INVALID_ARGUMENT;
+    FceFileLock lock;
+    FceStatus st = fce_cache_lock_acquire_shared(cache_dir, &lock);
+    if (st != FCE_OK) return st;
+    st = read_manifest(cache_dir, out_info);
+    fce_cache_lock_release(&lock);
+    return st;
 }
 
 FceStatus fce_validate(const char *cache_dir, const FceSchema *expected_schema) {

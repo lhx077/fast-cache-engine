@@ -89,6 +89,7 @@ Benchmark source and build targets are not shipped in the final repository. The 
 - [File Format](docs/FILE_FORMAT.md)
 - [Backends](docs/BACKENDS.md)
 - [Codecs](docs/CODECS.md)
+- [Packaging](docs/PACKAGING.md)
 
 Chinese docs:
 
@@ -97,3 +98,4 @@ Chinese docs:
 - [文件格式](docs/FILE_FORMAT.zh.md)
 - [后端设计](docs/BACKENDS.zh.md)
 - [编码器](docs/CODECS.zh.md)
+- [打包说明](docs/PACKAGING.zh.md)

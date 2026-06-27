@@ -181,6 +181,8 @@ Reader open validates every record and builds a transient hash-sorted index in m
 Strengths:
 
 - Supports incremental writes through `fce_log_append`.
+- Serializes freeze, append, inspect, and reader-open snapshots with an internal cache lock across processes and threads.
+- Open readers hold a shared lock until close, so writers wait instead of replacing mapped files.
 - Simple ingestion path.
 - Can be compacted into sorted, direct, radix, or mph backend.
 

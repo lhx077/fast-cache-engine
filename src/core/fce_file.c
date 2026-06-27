@@ -1,5 +1,9 @@
 #include "../internal/fce_internal.h"
 
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
 #if defined(_WIN32)
 typedef struct {
     void *view;
@@ -26,6 +30,134 @@ static void map_cleanup(void *ctx) {
     fce_free(m);
 }
 #endif
+
+#if defined(_WIN32)
+static SRWLOCK g_cache_lock_mutex = SRWLOCK_INIT;
+#else
+static pthread_rwlock_t g_cache_lock_mutex = PTHREAD_RWLOCK_INITIALIZER;
+#endif
+
+static FceStatus process_lock_enter(int shared) {
+#if defined(_WIN32)
+    if (shared) AcquireSRWLockShared(&g_cache_lock_mutex);
+    else AcquireSRWLockExclusive(&g_cache_lock_mutex);
+    return FCE_OK;
+#else
+    int rc = shared ? pthread_rwlock_rdlock(&g_cache_lock_mutex) : pthread_rwlock_wrlock(&g_cache_lock_mutex);
+    return rc == 0 ? FCE_OK : FCE_ERR_IO;
+#endif
+}
+
+static void process_lock_leave(int shared) {
+#if defined(_WIN32)
+    if (shared) ReleaseSRWLockShared(&g_cache_lock_mutex);
+    else ReleaseSRWLockExclusive(&g_cache_lock_mutex);
+#else
+    (void)shared;
+    pthread_rwlock_unlock(&g_cache_lock_mutex);
+#endif
+}
+
+static FceStatus cache_lock_acquire_impl(const char *cache_dir, FceFileLock *out_lock, int shared) {
+    if (!cache_dir || !out_lock) return FCE_ERR_INVALID_ARGUMENT;
+    memset(out_lock, 0, sizeof(*out_lock));
+#if defined(_WIN32)
+    out_lock->handle = INVALID_HANDLE_VALUE;
+#else
+    out_lock->fd = -1;
+#endif
+    out_lock->shared = shared ? 1 : 0;
+    FceStatus st = process_lock_enter(out_lock->shared);
+    if (st != FCE_OK) return st;
+
+    char *path = join_path_heap(cache_dir, FCE_LOCK_FILE);
+    if (!path) {
+        process_lock_leave(out_lock->shared);
+        return FCE_ERR_OUT_OF_MEMORY;
+    }
+
+#if defined(_WIN32)
+    HANDLE handle = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    fce_free(path);
+    if (handle == INVALID_HANDLE_VALUE) {
+        process_lock_leave(out_lock->shared);
+        return FCE_ERR_IO;
+    }
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    DWORD flags = shared ? 0 : LOCKFILE_EXCLUSIVE_LOCK;
+    if (!LockFileEx(handle, flags, 0, MAXDWORD, MAXDWORD, &ov)) {
+        CloseHandle(handle);
+        process_lock_leave(out_lock->shared);
+        return FCE_ERR_IO;
+    }
+    out_lock->handle = handle;
+    out_lock->locked = 1;
+    return FCE_OK;
+#else
+    int fd;
+    do {
+        fd = open(path, O_RDWR | O_CREAT, 0666);
+    } while (fd < 0 && errno == EINTR);
+    fce_free(path);
+    if (fd < 0) {
+        process_lock_leave(out_lock->shared);
+        return FCE_ERR_IO;
+    }
+
+    struct flock lock;
+    memset(&lock, 0, sizeof(lock));
+    lock.l_type = shared ? F_RDLCK : F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    int rc;
+    do {
+        rc = fcntl(fd, F_SETLKW, &lock);
+    } while (rc < 0 && errno == EINTR);
+    if (rc < 0) {
+        close(fd);
+        process_lock_leave(out_lock->shared);
+        return FCE_ERR_IO;
+    }
+    out_lock->fd = fd;
+    out_lock->locked = 1;
+    return FCE_OK;
+#endif
+}
+
+FceStatus fce_cache_lock_acquire(const char *cache_dir, FceFileLock *out_lock) {
+    return cache_lock_acquire_impl(cache_dir, out_lock, 0);
+}
+
+FceStatus fce_cache_lock_acquire_shared(const char *cache_dir, FceFileLock *out_lock) {
+    return cache_lock_acquire_impl(cache_dir, out_lock, 1);
+}
+
+void fce_cache_lock_release(FceFileLock *lock) {
+    if (!lock || !lock->locked) return;
+#if defined(_WIN32)
+    if (lock->handle != INVALID_HANDLE_VALUE) {
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        UnlockFileEx(lock->handle, 0, MAXDWORD, MAXDWORD, &ov);
+        CloseHandle(lock->handle);
+        lock->handle = INVALID_HANDLE_VALUE;
+    }
+#else
+    if (lock->fd >= 0) {
+        struct flock unlock;
+        memset(&unlock, 0, sizeof(unlock));
+        unlock.l_type = F_UNLCK;
+        unlock.l_whence = SEEK_SET;
+        fcntl(lock->fd, F_SETLK, &unlock);
+        close(lock->fd);
+        lock->fd = -1;
+    }
+#endif
+    lock->locked = 0;
+    process_lock_leave(lock->shared);
+}
 
 
 char *join_path_arena(FceArena *arena, const char *dir, const char *name) {
@@ -172,4 +304,3 @@ FceStatus read_file_arena(FceArena *arena, const char *path, FileBlob *out, int 
 #endif
     return FCE_OK;
 }
-

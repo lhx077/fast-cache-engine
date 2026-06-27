@@ -181,6 +181,8 @@ reader open 会校验所有 record，并在内存中建立 transient hash-sorted
 优点：
 
 - 通过 `fce_log_append` 支持增量写入。
+- freeze、append、inspect 和 reader-open 快照通过内部 cache lock 串行化，覆盖跨进程和同进程多线程写入。
+- 已打开 reader 会持有共享锁直到 close，所以 writer 会等待，而不是覆盖仍被 mmap 的文件。
 - 导入路径简单。
 - 可以 compact 成 sorted、direct、radix 或 mph backend。
 

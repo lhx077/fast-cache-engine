@@ -35,6 +35,7 @@
 #define FCE_KEYS_FILE "keys.fce"
 #define FCE_VALUES_FILE "values.fce"
 #define FCE_LOG_FILE "log.fce"
+#define FCE_LOCK_FILE "cache.lock"
 #define FCE_ENDIAN_TAG 0x0102030405060708ULL
 #define FCE_LOG_MAGIC 0x31474f4c454346ULL
 #define FCE_RADIX_MAGIC 0x3158444152454346ULL
@@ -174,6 +175,16 @@ typedef struct {
     size_t size;
 } FileBlob;
 
+typedef struct {
+#if defined(_WIN32)
+    HANDLE handle;
+#else
+    int fd;
+#endif
+    int locked;
+    int shared;
+} FceFileLock;
+
 struct FceReader {
     FceArena *arena;
     char *cache_dir;
@@ -185,6 +196,8 @@ struct FceReader {
     FileBlob log_blob;
     LogIndexEntry *log_index;
     size_t log_index_count;
+    FceFileLock cache_lock;
+    int has_cache_lock;
 };
 
 struct FceIterator {
@@ -217,6 +230,9 @@ FceStatus ensure_dir(const char *path);
 FceStatus write_file(const char *path, const void *data, size_t len);
 FceStatus read_file_heap_arena(FceArena *arena, const char *path, FileBlob *out);
 FceStatus read_file_arena(FceArena *arena, const char *path, FileBlob *out, int use_mmap);
+FceStatus fce_cache_lock_acquire(const char *cache_dir, FceFileLock *out_lock);
+FceStatus fce_cache_lock_acquire_shared(const char *cache_dir, FceFileLock *out_lock);
+void fce_cache_lock_release(FceFileLock *lock);
 
 FceStatus validate_schema(const FceSchema *s);
 FceManifestInfo make_manifest(const FceSchema *schema, uint64_t records);

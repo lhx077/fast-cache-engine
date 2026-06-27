@@ -8,9 +8,10 @@ index.fce
 keys.fce
 values.fce
 log.fce
+cache.lock
 ```
 
-Not every backend uses every file. Missing unused files are treated as zero-sized.
+Not every backend uses every data file. Missing unused data files are treated as zero-sized. `cache.lock` is an internal synchronization file used by writers, readers, validation, and inspection; it is not part of the persisted data model and may remain in the cache directory.
 
 ## Endianness
 

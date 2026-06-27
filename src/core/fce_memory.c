@@ -1,5 +1,9 @@
 #include "../internal/fce_internal.h"
 
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
 typedef struct FceAllocation {
     void *ptr;
     size_t size;
@@ -8,6 +12,12 @@ typedef struct FceAllocation {
 
 static FceMemoryStats g_mem_stats;
 static FceAllocation *g_allocations;
+
+#if defined(_WIN32)
+static SRWLOCK g_memory_lock = SRWLOCK_INIT;
+#else
+static pthread_mutex_t g_memory_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 typedef struct ArenaPtr {
     void *ptr;
@@ -21,9 +31,64 @@ typedef struct ArenaCleanup {
 } ArenaCleanup;
 
 struct FceArenaImpl {
+#if defined(_WIN32)
+    SRWLOCK lock;
+#else
+    pthread_mutex_t lock;
+#endif
     ArenaPtr *ptrs;
     ArenaCleanup *cleanups;
 };
+
+static void memory_lock(void) {
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&g_memory_lock);
+#else
+    pthread_mutex_lock(&g_memory_lock);
+#endif
+}
+
+static void memory_unlock(void) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&g_memory_lock);
+#else
+    pthread_mutex_unlock(&g_memory_lock);
+#endif
+}
+
+static int arena_lock(struct FceArenaImpl *a) {
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&a->lock);
+    return 1;
+#else
+    return pthread_mutex_lock(&a->lock) == 0;
+#endif
+}
+
+static void arena_unlock(struct FceArenaImpl *a) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&a->lock);
+#else
+    pthread_mutex_unlock(&a->lock);
+#endif
+}
+
+static int arena_lock_init(struct FceArenaImpl *a) {
+#if defined(_WIN32)
+    InitializeSRWLock(&a->lock);
+    return 1;
+#else
+    return pthread_mutex_init(&a->lock, NULL) == 0;
+#endif
+}
+
+static void arena_lock_destroy(struct FceArenaImpl *a) {
+#if defined(_WIN32)
+    (void)a;
+#else
+    pthread_mutex_destroy(&a->lock);
+#endif
+}
 
 static FceAllocation *find_allocation(void *ptr, FceAllocation **out_prev) {
     FceAllocation *prev = NULL;
@@ -60,9 +125,11 @@ void *fce_xmalloc(size_t size) {
     }
     node->ptr = p;
     node->size = n;
+    memory_lock();
     node->next = g_allocations;
     g_allocations = node;
     add_stats(n);
+    memory_unlock();
     return p;
 }
 
@@ -80,11 +147,18 @@ void *fce_xrealloc(void *ptr, size_t size) {
         fce_free(ptr);
         return NULL;
     }
+    memory_lock();
     FceAllocation *node = find_allocation(ptr, NULL);
-    if (!node) return NULL;
+    if (!node) {
+        memory_unlock();
+        return NULL;
+    }
     size_t old_size = node->size;
     void *p = realloc(ptr, size);
-    if (!p) return NULL;
+    if (!p) {
+        memory_unlock();
+        return NULL;
+    }
     node->ptr = p;
     node->size = size;
     if (size >= old_size) {
@@ -95,35 +169,47 @@ void *fce_xrealloc(void *ptr, size_t size) {
     if (g_mem_stats.active_bytes > g_mem_stats.peak_bytes) {
         g_mem_stats.peak_bytes = g_mem_stats.active_bytes;
     }
+    memory_unlock();
     return p;
 }
 
 void fce_free(void *ptr) {
     if (!ptr) return;
     FceAllocation *prev = NULL;
+    memory_lock();
     FceAllocation *node = find_allocation(ptr, &prev);
+    size_t size = 0;
     if (node) {
-        size_t size = node->size;
+        size = node->size;
         if (prev) prev->next = node->next;
         else g_allocations = node->next;
-        free(node);
         if (g_mem_stats.active_allocations) g_mem_stats.active_allocations--;
         if (g_mem_stats.active_bytes >= size) g_mem_stats.active_bytes -= size;
         g_mem_stats.total_frees++;
     }
+    memory_unlock();
+    if (node) free(node);
     free(ptr);
 }
 
 FceStatus fce_memory_stats(FceMemoryStats *out_stats) {
     if (!out_stats) return FCE_ERR_INVALID_ARGUMENT;
+    memory_lock();
     *out_stats = g_mem_stats;
+    memory_unlock();
     return FCE_OK;
 }
 
 FceStatus fce_arena_create(FceArena **out_arena) {
     if (!out_arena) return FCE_ERR_INVALID_ARGUMENT;
     *out_arena = (FceArena *)fce_xcalloc(1, sizeof(struct FceArenaImpl));
-    return *out_arena ? FCE_OK : FCE_ERR_OUT_OF_MEMORY;
+    if (!*out_arena) return FCE_ERR_OUT_OF_MEMORY;
+    if (!arena_lock_init((struct FceArenaImpl *)*out_arena)) {
+        fce_free(*out_arena);
+        *out_arena = NULL;
+        return FCE_ERR_IO;
+    }
+    return FCE_OK;
 }
 
 void *fce_arena_alloc(FceArena *arena, size_t size, size_t align) {
@@ -137,9 +223,15 @@ void *fce_arena_alloc(FceArena *arena, size_t size, size_t align) {
         fce_free(p);
         return NULL;
     }
+    if (!arena_lock(a)) {
+        fce_free(n);
+        fce_free(p);
+        return NULL;
+    }
     n->ptr = p;
     n->next = a->ptrs;
     a->ptrs = n;
+    arena_unlock(a);
     return p;
 }
 
@@ -157,22 +249,32 @@ FceStatus fce_arena_register_cleanup(FceArena *arena, void (*cleanup)(void *ctx)
     if (!n) return FCE_ERR_OUT_OF_MEMORY;
     n->cleanup = cleanup;
     n->ctx = ctx;
+    if (!arena_lock(a)) {
+        fce_free(n);
+        return FCE_ERR_IO;
+    }
     n->next = a->cleanups;
     a->cleanups = n;
+    arena_unlock(a);
     return FCE_OK;
 }
 
 void fce_arena_destroy(FceArena *arena) {
     if (!arena) return;
     struct FceArenaImpl *a = (struct FceArenaImpl *)arena;
+    arena_lock(a);
     ArenaCleanup *c = a->cleanups;
+    ArenaPtr *p = a->ptrs;
+    a->cleanups = NULL;
+    a->ptrs = NULL;
+    arena_unlock(a);
+    arena_lock_destroy(a);
     while (c) {
         ArenaCleanup *next = c->next;
         c->cleanup(c->ctx);
         fce_free(c);
         c = next;
     }
-    ArenaPtr *p = a->ptrs;
     while (p) {
         ArenaPtr *next = p->next;
         fce_free(p->ptr);

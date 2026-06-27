@@ -1,0 +1,17 @@
+{
+  "name": "fast-cache-engine",
+  "version": "1.0.0",
+  "description": "Native C library for verifiable, read-optimized persistent key/value caches.",
+  "license": "Apache-2.0",
+  "features": {
+    "zstd": {
+      "description": "Enable the optional zstd codec.",
+      "dependencies": [
+        "zstd"
+      ]
+    }
+  },
+  "default-features": [
+    "zstd"
+  ]
+}

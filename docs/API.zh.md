@@ -14,6 +14,12 @@ Fast Cache Engine 有三类内存所有权：
 
 不要对 Fast Cache Engine 返回的内存调用系统 `free`。只有明确写明由调用者持有的 buffer 才用 `fce_free` 释放。
 
+## 线程和进程安全
+
+所有会访问 cache 目录的操作都会通过内部 `cache.lock` 文件串行化。`fce_builder_freeze` 和 `fce_log_append` 这类 writer 使用独占锁。`fce_reader_open` 和 `fce_reader_open_expected` 打开的 reader 会持有共享锁直到 `fce_reader_close`；`fce_validate` 和 `fce_inspect` 也使用共享锁。这能防止 reader 看到写到一半的快照，也能防止 writer 覆盖仍被 mmap reader 使用的文件。
+
+已经打开的 reader 是一个快照视图。它不会看到之后的 append 或 freeze；如果需要读取新记录，需要重新打开 reader。写同一个 cache 目录的操作会等待已打开 reader 关闭。内部 allocator、内存统计和 arena bookkeeping 已经做并发保护。不要在另一个线程仍使用同一 builder、reader 或 iterator 时关闭该句柄。同一个 builder 或 iterator 上的可变操作仍应由调用方自行串行化。
+
 ## 错误码
 
 ```c
@@ -279,7 +285,7 @@ FceStatus fce_reader_open_expected(
     FceReader **out_reader);
 ```
 
-打开 cache 目录，读取 manifest，恢复 schema flags，mmap 或加载 backend 文件，校验 size/checksum/offset，并构建必要的 transient reader index。`fce_reader_open_expected` 会额外比较 `fce_schema_hash(expected_schema)` 与 manifest schema hash。
+打开 cache 目录，读取 manifest，恢复 schema flags，mmap 或加载 backend 文件，校验 size/checksum/offset，并构建必要的 transient reader index。reader 会持有共享 cache lock 直到 close，因此不会看到只写完一半的 freeze 或 log append，writer 也不会覆盖 reader 仍在 mmap 的文件。`fce_reader_open_expected` 会额外比较 `fce_schema_hash(expected_schema)` 与 manifest schema hash。
 
 reader open 会校验：
 
@@ -410,7 +416,7 @@ FceStatus fce_log_append(
     size_t value_len);
 ```
 
-向已有 log backend 追加一条记录。调用会读取 manifest 中的 schema，对 key/value 编码，追加带 CRC 的 record，更新 record count、log size、log checksum，并重写 manifest。
+向已有 log backend 追加一条记录。调用会读取 manifest 中的 schema，对 key/value 编码，追加带 CRC 的 record，更新 record count、log size、log checksum，并重写 manifest。追加操作会通过内部 cache lock 串行化，所以多个进程可以同时向同一个 log cache append，不会竞争 manifest 更新。
 
 ```c
 FceStatus fce_compact(

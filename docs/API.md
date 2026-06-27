@@ -14,6 +14,12 @@ Fast Cache Engine has three memory ownership categories:
 
 Do not call `free` on memory returned by Fast Cache Engine. Use `fce_free` only for caller-owned buffers explicitly documented as such.
 
+## Thread And Process Safety
+
+Operations that touch a cache directory are serialized with an internal `cache.lock` file. Writers such as `fce_builder_freeze` and `fce_log_append` take an exclusive lock. Readers opened by `fce_reader_open` or `fce_reader_open_expected` hold a shared lock until `fce_reader_close`; `fce_validate` and `fce_inspect` also use shared locking. This prevents readers from observing half-written snapshots and prevents writers from replacing files that an mmap-backed reader is still using.
+
+An opened reader is a snapshot view. It does not observe later appends or freezes; reopen the reader to see new records. Writers targeting the same cache directory wait for open readers to close. The internal allocator, memory statistics, and arena bookkeeping are protected for concurrent API calls. Do not close a builder, reader, or iterator while another thread is using the same handle. Mutable operations on the same builder or iterator should still be serialized by the caller.
+
 ## Status Codes
 
 ```c
@@ -290,7 +296,7 @@ FceStatus fce_reader_open_expected(
     FceReader **out_reader);
 ```
 
-Opens a cache directory, reads the manifest, restores schema flags, maps or loads backend files, validates sizes/checksums/offsets, and builds any required transient reader index. `fce_reader_open_expected` additionally compares `fce_schema_hash(expected_schema)` against the manifest schema hash.
+Opens a cache directory, reads the manifest, restores schema flags, maps or loads backend files, validates sizes/checksums/offsets, and builds any required transient reader index. The reader holds a shared cache lock until close, so it cannot observe a half-finished freeze or log append and writers cannot replace files that the reader still maps. `fce_reader_open_expected` additionally compares `fce_schema_hash(expected_schema)` against the manifest schema hash.
 
 Reader open validates:
 
@@ -421,7 +427,7 @@ FceStatus fce_log_append(
     size_t value_len);
 ```
 
-Appends one record to an existing log backend. The call encodes key/value using the schema stored in the manifest, appends a CRC-protected record, updates record count, log size, log checksum, and rewrites the manifest.
+Appends one record to an existing log backend. The call encodes key/value using the schema stored in the manifest, appends a CRC-protected record, updates record count, log size, log checksum, and rewrites the manifest. Appends are serialized with an internal cache lock, so multiple processes may append to the same log cache without racing the manifest update.
 
 ```c
 FceStatus fce_compact(

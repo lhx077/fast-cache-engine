@@ -105,9 +105,14 @@ def _load_library() -> ctypes.CDLL:
     candidates = [
         Path(env_library) if env_library else None,
         here / "fast_cache_engine.dll",
+        here / "libfast_cache_engine.so",
+        here / "libfast_cache_engine.dylib",
         here.parent / "build" / "Release" / "fast_cache_engine.dll",
         here.parent / "build" / "libfast_cache_engine.so",
         here.parent / "build" / "libfast_cache_engine.dylib",
+        here.parent.parent / "build" / "Release" / "fast_cache_engine.dll",
+        here.parent.parent / "build" / "libfast_cache_engine.so",
+        here.parent.parent / "build" / "libfast_cache_engine.dylib",
     ]
     for path in candidates:
         if path and path.exists():

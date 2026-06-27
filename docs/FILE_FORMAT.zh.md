@@ -8,9 +8,10 @@ index.fce
 keys.fce
 values.fce
 log.fce
+cache.lock
 ```
 
-不是所有 backend 都使用所有文件；未使用文件按 0 大小处理。
+不是所有 backend 都使用所有数据文件；未使用数据文件按 0 大小处理。`cache.lock` 是 writer、reader、validate 和 inspect 使用的内部同步文件，不属于持久化数据模型，可以留在 cache 目录中。
 
 ## 字节序
 

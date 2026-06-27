@@ -96,26 +96,40 @@ FceStatus get_log(FceReader *r, const void *key, size_t key_len, const void **ou
 
 FceStatus fce_log_append(const char *cache_dir, const void *key, size_t key_len, const void *value, size_t value_len) {
     if (!cache_dir || (!key && key_len) || (!value && value_len)) return FCE_ERR_INVALID_ARGUMENT;
-    FceManifestInfo m;
-    FceStatus st = read_manifest(cache_dir, &m);
+    FceFileLock lock;
+    FceStatus st = fce_cache_lock_acquire(cache_dir, &lock);
     if (st != FCE_OK) return st;
-    if (m.backend_kind != FCE_BACKEND_LOG) return FCE_ERR_INVALID_ARGUMENT;
+    FceManifestInfo m;
+    st = read_manifest(cache_dir, &m);
+    if (st != FCE_OK) {
+        fce_cache_lock_release(&lock);
+        return st;
+    }
+    if (m.backend_kind != FCE_BACKEND_LOG) {
+        fce_cache_lock_release(&lock);
+        return FCE_ERR_INVALID_ARGUMENT;
+    }
     FceSchema s = schema_from_manifest(&m);
     void *encoded_key = NULL;
     void *encoded_value = NULL;
     size_t encoded_key_len = 0;
     size_t encoded_value_len = 0;
     st = fce_codec_encode(s.key_codec, key, key_len, &encoded_key, &encoded_key_len);
-    if (st != FCE_OK) return st;
+    if (st != FCE_OK) {
+        fce_cache_lock_release(&lock);
+        return st;
+    }
     st = fce_codec_encode(s.value_codec, value, value_len, &encoded_value, &encoded_value_len);
     if (st != FCE_OK) {
         fce_free(encoded_key);
+        fce_cache_lock_release(&lock);
         return st;
     }
     char *lp = join_path_heap(cache_dir, FCE_LOG_FILE);
     if (!lp) {
         fce_free(encoded_key);
         fce_free(encoded_value);
+        fce_cache_lock_release(&lock);
         return FCE_ERR_OUT_OF_MEMORY;
     }
     FILE *f = fopen(lp, "ab");
@@ -123,6 +137,7 @@ FceStatus fce_log_append(const char *cache_dir, const void *key, size_t key_len,
         fce_free(lp);
         fce_free(encoded_key);
         fce_free(encoded_value);
+        fce_cache_lock_release(&lock);
         return FCE_ERR_IO;
     }
     uint64_t head[3] = {FCE_LOG_MAGIC, (uint64_t)encoded_key_len, (uint64_t)encoded_value_len};
@@ -138,12 +153,14 @@ FceStatus fce_log_append(const char *cache_dir, const void *key, size_t key_len,
         fce_free(lp);
         fce_free(encoded_key);
         fce_free(encoded_value);
+        fce_cache_lock_release(&lock);
         return FCE_ERR_IO;
     }
     if (fclose(f) != 0) {
         fce_free(lp);
         fce_free(encoded_key);
         fce_free(encoded_value);
+        fce_cache_lock_release(&lock);
         return FCE_ERR_IO;
     }
     m.record_count++;
@@ -152,6 +169,7 @@ FceStatus fce_log_append(const char *cache_dir, const void *key, size_t key_len,
     fce_free(lp);
     fce_free(encoded_key);
     fce_free(encoded_value);
-    return write_manifest(cache_dir, &m);
+    st = write_manifest(cache_dir, &m);
+    fce_cache_lock_release(&lock);
+    return st;
 }
-

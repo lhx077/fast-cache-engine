@@ -91,7 +91,9 @@ FceStatus fce_builder_bulk_put(FceBuilder *builder, const void *const *keys, con
 
 FceStatus fce_builder_freeze(FceBuilder *b) {
     if (!b || b->frozen) return FCE_ERR_INVALID_ARGUMENT;
-    FceStatus st;
+    FceFileLock lock;
+    FceStatus st = fce_cache_lock_acquire(b->cache_dir, &lock);
+    if (st != FCE_OK) return st;
     switch (b->schema.backend) {
         case FCE_BACKEND_SORTED_INDEX:
             st = freeze_sorted_like(b, b->schema.backend);
@@ -112,6 +114,7 @@ FceStatus fce_builder_freeze(FceBuilder *b) {
             st = FCE_ERR_UNSUPPORTED;
             break;
     }
+    fce_cache_lock_release(&lock);
     if (st == FCE_OK) b->frozen = 1;
     return st;
 }

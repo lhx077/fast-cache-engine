@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "cmake>=3.16"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fast-cache-engine"
+version = "1.0.0"
+description = "Native C library for verifiable, read-optimized persistent key/value caches."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Fast Cache Engine contributors" }
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: C",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries"
+]
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+packages = ["fast_cache_engine"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+fast_cache_engine = ["*.dll", "*.so", "*.dylib"]
+
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+test-command = "python -c \"import fast_cache_engine; print(fast_cache_engine.version_string())\""

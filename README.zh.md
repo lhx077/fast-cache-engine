@@ -90,6 +90,7 @@ log.fce
 - [文件格式](docs/FILE_FORMAT.zh.md)
 - [后端设计](docs/BACKENDS.zh.md)
 - [编码器](docs/CODECS.zh.md)
+- [打包说明](docs/PACKAGING.zh.md)
 
 英文文档：
 
@@ -98,3 +99,4 @@ log.fce
 - [File Format](docs/FILE_FORMAT.md)
 - [Backends](docs/BACKENDS.md)
 - [Codecs](docs/CODECS.md)
+- [Packaging](docs/PACKAGING.md)
